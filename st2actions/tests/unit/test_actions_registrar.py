@@ -78,7 +78,9 @@ class ActionsRegistrarTest(tests_base.DbTestCase):
         action_file = loader.get_fixture_file_path_abs(
             'generic', 'actions', 'action-with-no-parameters.yaml')
 
-        self.assertEqual(registrar._register_action('dummy', action_file), None)
+        action_db = registrar._register_action('dummy', action_file)
+
+        self.assertEqual(action_db.ref, 'dummy.list_dns_zones')
 
     @mock.patch.object(action_validator, '_is_valid_pack', mock.MagicMock(return_value=True))
     @mock.patch.object(action_validator, '_get_runner_model',

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import six
 import sys
 import logging
 
@@ -180,8 +181,14 @@ def register_actions():
 
     # 2. Register actions
     try:
-        registered_count = actions_registrar.register_actions(pack_dir=pack_dir,
-                                                              fail_on_failure=fail_on_failure)
+        registered = actions_registrar.register_actions(pack_dir=pack_dir,
+                                                        fail_on_failure=fail_on_failure)
+
+        for pack, files in six.iteritems(registered):
+            for file, result in six.iteritems(files):
+                if result['status'] == 'success':
+                    registered_count += 1
+
     except Exception as e:
         exc_info = not fail_on_failure
         LOG.warning('Failed to register actions: %s', e, exc_info=exc_info)

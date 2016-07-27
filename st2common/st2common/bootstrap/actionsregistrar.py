@@ -49,26 +49,26 @@ class ActionsRegistrar(ResourceRegistrar):
         # Register packs first
         self.register_packs(base_dirs=base_dirs)
 
-        registered_count = 0
+        packs = {}
         content = self._pack_loader.get_content(base_dirs=base_dirs,
                                                 content_type='actions')
 
         for pack, actions_dir in six.iteritems(content):
             if not actions_dir:
                 LOG.debug('Pack %s does not contain actions.', pack)
+                packs[pack] = {}
                 continue
             try:
                 LOG.debug('Registering actions from pack %s:, dir: %s', pack, actions_dir)
                 actions = self._get_actions_from_pack(actions_dir)
-                count = self._register_actions_from_pack(pack=pack, actions=actions)
-                registered_count += count
+                packs[pack] = self._register_actions_from_pack(pack=pack, actions=actions)
             except Exception as e:
                 if self._fail_on_failure:
                     raise e
 
                 LOG.exception('Failed registering all actions from pack: %s', actions_dir)
 
-        return registered_count
+        return packs
 
     def register_actions_from_pack(self, pack_dir):
         """
@@ -141,27 +141,36 @@ class ActionsRegistrar(ResourceRegistrar):
             model = Action.add_or_update(model)
             extra = {'action_db': model}
             LOG.audit('Action updated. Action %s from %s.', model, action, extra=extra)
+
+            return model
         except Exception:
             LOG.exception('Failed to write action to db %s.', model.name)
             raise
 
     def _register_actions_from_pack(self, pack, actions):
-        registered_count = 0
+        result = {}
 
         for action in actions:
             try:
                 LOG.debug('Loading action from %s.', action)
-                self._register_action(pack, action)
+                action_db = self._register_action(pack, action)
+                result[action] = {
+                    'status': 'success',
+                    'ref': action_db.ref
+                }
             except Exception as e:
                 if self._fail_on_failure:
                     raise e
 
                 LOG.exception('Unable to register action: %s', action)
-                continue
-            else:
-                registered_count += 1
+                result[action] = {
+                    'status': 'error',
+                    'faultstring': str(e)
+                }
 
-        return registered_count
+                continue
+
+        return result
 
 
 def register_actions(packs_base_paths=None, pack_dir=None, use_pack_cache=True,
