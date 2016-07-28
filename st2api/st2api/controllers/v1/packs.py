@@ -34,12 +34,22 @@ from st2common.models.api.base import jsexpose
 from st2common.models.api.base import BaseAPI
 from st2api.controllers.resource import ResourceController
 from st2api.controllers.v1.actionexecutions import ActionExecutionsControllerMixin
+from st2common.constants.pack import SYSTEM_PACK_NAMES
+from st2common.exceptions.db import StackStormDBObjectNotFoundError
 from st2common.models.api.action import LiveActionCreateAPI
 from st2common.models.api.pack import PackAPI
 from st2common.persistence.pack import Pack
+from st2common.persistence.pack import ConfigSchema
+from st2common.persistence.reactor import SensorType
+from st2common.persistence.reactor import TriggerType
+from st2common.persistence.reactor import Trigger
+from st2common.persistence.reactor import Rule
+from st2common.persistence.action import Action
+from st2common.persistence.action import ActionAlias
 from st2common.rbac.types import PermissionType
 from st2common.rbac.decorators import request_user_has_permission
 from st2common.rbac.decorators import request_user_has_resource_db_permission
+from st2common.services.triggers import cleanup_trigger_db_for_rule
 
 __all__ = [
     'PacksController',
@@ -47,6 +57,9 @@ __all__ = [
 ]
 
 LOG = logging.getLogger(__name__)
+
+
+BLOCKED_PACKS = frozenset(SYSTEM_PACK_NAMES)
 
 
 class PackInstallRequestAPI(object):
@@ -151,6 +164,67 @@ class PackRegisterController(RestController):
         return result
 
 
+class PackDeregisterController(RestController):
+
+    @jsexpose(body_cls=PackInstallRequestAPI, arg_types=[str], status_code=http_client.ACCEPTED)
+    def post(self, pack_deregister_request, ref_or_id=None):
+        if ref_or_id:
+            packs = [ref_or_id]
+        else:
+            packs = pack_deregister_request.packs
+
+        intersection = BLOCKED_PACKS & frozenset(packs)
+        if len(intersection) > 0:
+            names = ', '.join(list(intersection))
+            raise ValueError('System packs can not be deregistred: %s.' % (names))
+
+        for pack in packs:
+            LOG.debug('Removing pack %s.', pack)
+            for access_cls in [SensorType, TriggerType, Trigger, Action, Rule, ActionAlias]:
+                deleted_entities = self._delete_pack_db_objects(pack=pack, access_cls=access_cls)
+                if access_cls is Rule:
+                    for rule_db in deleted_entities:
+                        cleanup_trigger_db_for_rule(rule_db=rule_db)
+
+            try:
+                pack_db = Pack.get_by_name(value=pack)
+            except StackStormDBObjectNotFoundError as e:
+                LOG.exception('Pack DB object not found: %s', pack)
+            else:
+                try:
+                    Pack.delete(pack_db)
+                except Exception:
+                    LOG.exception('Failed to remove DB object %s.', pack_db)
+                    raise
+
+            try:
+                config_schema_db = ConfigSchema.get_by_pack(value=pack)
+            except StackStormDBObjectNotFoundError as e:
+                LOG.exception('ConfigSchemaDB object not found: %s', pack)
+            else:
+                try:
+                    ConfigSchema.delete(config_schema_db)
+                except Exception:
+                    LOG.exception('Failed to remove DB object %s.', config_schema_db)
+                    raise
+
+            LOG.info('Removed pack %s.', pack)
+
+    def _delete_pack_db_objects(self, pack, access_cls):
+        db_objs = access_cls.get_all(pack=pack)
+
+        deleted_objs = []
+
+        for db_obj in db_objs:
+            try:
+                access_cls.delete(db_obj)
+                deleted_objs.append(db_obj)
+            except:
+                LOG.exception('Failed to remove DB object %s.', db_obj)
+
+        return deleted_objs
+
+
 class BasePacksController(ResourceController):
     model = PackAPI
     access = Pack
@@ -207,6 +281,7 @@ class PacksController(BasePacksController):
     install = PackInstallController()
     uninstall = PackUninstallController()
     register = PackRegisterController()
+    deregister = PackDeregisterController()
     views = PackViewsController()
 
     @request_user_has_permission(permission_type=PermissionType.PACK_LIST)
