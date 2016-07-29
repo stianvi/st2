@@ -17,8 +17,10 @@ import pecan
 from pecan.rest import RestController
 from six.moves import http_client
 
+from eventlet import event
 from oslo_config import cfg
 
+from st2api.listener import get_listener
 import st2common
 from st2common import log as logging
 import st2common.bootstrap.triggersregistrar as triggers_registrar
@@ -30,6 +32,7 @@ import st2common.bootstrap.runnersregistrar as runners_registrar
 import st2common.bootstrap.rulesregistrar as rules_registrar
 import st2common.bootstrap.ruletypesregistrar as rule_types_registrar
 import st2common.bootstrap.configsregistrar as configs_registrar
+from st2common.constants.action import LIVEACTION_FAILED_STATES
 from st2common.models.api.base import jsexpose
 from st2common.models.api.base import BaseAPI
 from st2api.controllers.resource import ResourceController
@@ -68,6 +71,19 @@ class PackInstallRequestAPI(object):
 
     def validate(self):
         assert isinstance(self.packs, list)
+
+        return self
+
+    def __json__(self):
+        return vars(self)
+
+
+class PackInitRequestAPI(object):
+    def __init__(self, name=None):
+        self.name = name
+
+    def validate(self):
+        assert isinstance(self.name, unicode)
 
         return self
 
@@ -225,6 +241,31 @@ class PackDeregisterController(RestController):
         return deleted_objs
 
 
+class PackInitController(ActionExecutionsControllerMixin, RestController):
+
+    @jsexpose(body_cls=PackInitRequestAPI, status_code=http_client.CREATED)
+    def post(self, pack_init_request):
+        parameters = {
+            'pack_name': pack_init_request.name
+        }
+
+        new_liveaction_api = LiveActionCreateAPI(action='packs.init',
+                                                 parameters=parameters,
+                                                 user=None)
+
+        execution = self._handle_schedule_execution(liveaction_api=new_liveaction_api)
+
+        evt = event.Event()
+
+        listener = get_listener()
+        listener.listen(execution.id, evt)
+
+        completed_execution = evt.wait()
+
+        if completed_execution.status in LIVEACTION_FAILED_STATES:
+            raise ValueError(completed_execution.result['stderr'])
+
+
 class BasePacksController(ResourceController):
     model = PackAPI
     access = Pack
@@ -278,6 +319,7 @@ class PacksController(BasePacksController):
     }
 
     # Nested controllers
+    init = PackInitController()
     install = PackInstallController()
     uninstall = PackUninstallController()
     register = PackRegisterController()
